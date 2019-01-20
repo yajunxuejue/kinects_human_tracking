@@ -40,6 +40,9 @@
 #include <std_msgs/Float32.h>
 #include <kinects_human_tracking/kalmanFilter3Pos3Vel.hpp>
 #include <kinects_human_tracking/pointCloudUtils.hpp>
+#include <iostream>
+#include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>
 
 // defining pi
 #ifndef M_PI
@@ -58,12 +61,12 @@ typedef sensor_msgs::PointCloud2 PCMsg;
 
 // Global variables
 PointCloudSM::Ptr kinects_pc_, cluster_cloud_;
-ros::Publisher cluster_pc_pub_, pc_clustered_pub_, cloud_mini_pt_pub_, cluster_state_pub_, min_pub_,vel_pub_, dist_vect_pub_, track_pt_pub_;
+ros::Publisher cluster_pc_pub_, pc_clustered_pub_, cloud_mini_pt_pub_, cluster_state_pub_, min_pub_,vel_pub_, dist_vect_pub_, track_pt_pub_, repul_norm_pub_,cmd_vel_pub_;
 double last_min_dist_, voxel_size_, kinect_noise_, kinect_noise_z_, process_noise_, minimum_height_, max_tracking_jump_, clustering_tolerance_;
-bool downsampling_;
+bool downsampling_, switch_DSM;
 geometry_msgs::PointStamped last_cluster_pt_;
-int min_cluster_size_;
-Eigen::Vector3f last_pos_;
+int min_cluster_size_, write_pcl;
+Eigen::Vector3f last_pos_, repulsive_vector, sum_repulsive_vector;
 KalmanFilter kalman_;
 ros::Time last_observ_time_;
 vector<ClippingRule> clipping_rules_;

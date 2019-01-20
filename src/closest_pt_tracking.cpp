@@ -9,7 +9,7 @@ int main(int argc, char** argv){
   ros::NodeHandle nh, nh_priv("~");
   
   ROS_INFO("Initializing tracking...");  
-  
+  write_pcl=1;
   tf_listener_ = new tf::TransformListener();
    
   // Get params topics and frames names
@@ -66,9 +66,11 @@ int main(int argc, char** argv){
   cloud_mini_pt_pub_ = nh.advertise<geometry_msgs::PointStamped>(kinect_topic_name+"/min_pt",1);
   cluster_state_pub_ = nh.advertise<visualization_msgs::MarkerArray>(kinect_topic_name+"/tracking_state",1);
   track_pt_pub_ = nh.advertise<geometry_msgs::PointStamped>(kinect_topic_name+"/closest_pt_tracking",1);
-  dist_vect_pub_ = nh.advertise<geometry_msgs::Vector3>(kinect_topic_name+"/vector_closest_frame",1);
+  dist_vect_pub_ = nh.advertise<geometry_msgs::Pose>(kinect_topic_name+"/pose_comand",1);
+  //cmd_vel_pub_ = nh.advertise<geometry_msgs::Twist>("/car_vel_com", 1);
   min_pub_ = nh.advertise<std_msgs::Float32>(kinect_topic_name+"/minimum_distance",1);
   vel_pub_ = nh.advertise<geometry_msgs::Twist>(kinect_topic_name+"/closest_vel_tracking",1);
+  repul_norm_pub_ = nh.advertise<std_msgs::Float32>(kinect_topic_name+"/repul_norm",1);
   ros::Subscriber kinect_pc_sub = nh.subscribe<PCMsg>(kinect_topic_name, 1, callback);
   
   // Initialize Kalman filter
@@ -136,17 +138,22 @@ void callback(const PCMsg::ConstPtr& kinect_pc_msg){
     std::vector<pcl::PointIndices> tmp_cluster_indices;
     for(int i=0; i<cluster_indices.size(); i++){
       if (cluster_heights[i]>=minimum_height_)
-	tmp_cluster_indices.push_back(cluster_indices[i]);
+      tmp_cluster_indices.push_back(cluster_indices[i]);
     }
     cluster_indices = tmp_cluster_indices;
   }
    
   // Get closest cluster to the robot
   if (cluster_indices.size()>0){
-    get_closest_cluster_to_frame(kinects_pc_, cluster_indices, tf_listener_, enf_eff_frame_, cluster_cloud_, last_min_dist_, last_cluster_pt_);
+    get_closest_cluster_to_frame(kinects_pc_, cluster_indices, tf_listener_, enf_eff_frame_, cluster_cloud_, last_min_dist_, last_cluster_pt_, sum_repulsive_vector, switch_DSM);
     
     // Publish cluster's' pointCloud
     cluster_pc_pub_.publish(*cluster_cloud_);
+
+    if(write_pcl==1){
+      pcl::io::savePCDFile("/home/birl/static_obstacles.pcd", *cluster_cloud_);
+      write_pcl = 0;
+    }
     
     // Publish minimum point
     cloud_mini_pt_pub_.publish<geometry_msgs::PointStamped>(last_cluster_pt_);
@@ -209,12 +216,118 @@ void callback(const PCMsg::ConstPtr& kinect_pc_msg){
       ROS_ERROR("%s",ex.what());
       return;
     }
-    
-    geometry_msgs::Vector3 dist_vect;
-    dist_vect.x = end_eff_transform.getOrigin().getX() - est(0);
-    dist_vect.y = end_eff_transform.getOrigin().getY() - est(1);
-    dist_vect.z = end_eff_transform.getOrigin().getZ() - est(2);
+
+    /*Modified by lyj:adding fun calculating repulsive vector*/
+//    geometry_msgs::Vector3 dist_vect;
+//    dist_vect.x = end_eff_transform.getOrigin().getX() - est(0);
+//    dist_vect.y = end_eff_transform.getOrigin().getY() - est(1);
+//    dist_vect.z = end_eff_transform.getOrigin().getZ() - est(2);
+    /*************dynamical system modulation control******************************/
+
+    Eigen::Vector3f unit_repulsive_vector1, unit_repulsive_vector2, unit_repulsive_vector3, command_velocity ,target_point(0.695, -0.02, 0.402), init_point(end_eff_transform.getOrigin().getX(), end_eff_transform.getOrigin().getY(), end_eff_transform.getOrigin().getZ());
+    Eigen::Matrix3f T, E, T_inv;
+    E << 0,0,0,
+         0,0,0,
+         0,0,0;
+
+    if ((target_point - init_point).norm() < 0.01){
+      command_velocity(0) = 0;
+      command_velocity(1) = 0;
+      command_velocity(2) = 0;
+    }else{
+      command_velocity =(target_point - init_point)/(target_point - init_point).norm();
+    }
+
+    //std::cout<<switch_DSM<<std::endl;
+    if(switch_DSM == true){
+      //std::cout<<22222<<std::endl;
+      switch_DSM = false;
+      if(sum_repulsive_vector.norm() > 0){
+         unit_repulsive_vector1 = sum_repulsive_vector/sum_repulsive_vector.norm();
+         sum_repulsive_vector << 0,0,0;
+         unit_repulsive_vector2(0) = unit_repulsive_vector1(1);
+         unit_repulsive_vector2(1) = -unit_repulsive_vector1(0);
+         unit_repulsive_vector2(2) = 0;
+         unit_repulsive_vector2 = unit_repulsive_vector2/unit_repulsive_vector2.norm();
+         unit_repulsive_vector3 = unit_repulsive_vector1.cross(unit_repulsive_vector2);
+         T << unit_repulsive_vector1(0), unit_repulsive_vector2(0), unit_repulsive_vector3(0),
+              unit_repulsive_vector1(1), unit_repulsive_vector2(1), unit_repulsive_vector3(1),
+              unit_repulsive_vector1(2), unit_repulsive_vector2(2), unit_repulsive_vector3(2);
+         if((unit_repulsive_vector1.dot(command_velocity)) < 0){
+           std::cout<<66666<<std::endl;
+           E(0,0) = 1 - 2/(1 + exp((last_min_dist_*5 - 1)*8));
+           E(1,1) = 1 + 2/(1 + exp((last_min_dist_*5 - 1)*8));
+           E(2,2) = 1 + 2/(1 + exp((last_min_dist_*5 - 1)*8));
+         }else{
+           E(0,0) = 1 + 1/(1 + exp((last_min_dist_*5 - 1)*8));
+           E(1,1) = 1 + 1/(1 + exp((last_min_dist_*5 - 1)*8));
+           E(2,2) = 1 + 1/(1 + exp((last_min_dist_*5 - 1)*8));
+         }
+         T_inv = T.transpose();
+         command_velocity = T_inv * E * T * command_velocity;
+      }else{
+        command_velocity(0) = 0;
+        command_velocity(1) = 0;
+        command_velocity(2) = 0;
+      }
+    }
+    geometry_msgs::Pose dist_vect;
+    dist_vect.position.x = 0.01*command_velocity(0) + end_eff_transform.getOrigin().getX();
+    dist_vect.position.y = 0.01*command_velocity(1) + end_eff_transform.getOrigin().getY();
+    dist_vect.position.z = 0.01*command_velocity(2) + end_eff_transform.getOrigin().getZ();
+    dist_vect.orientation.x = end_eff_transform.getRotation().getX();
+    dist_vect.orientation.y = end_eff_transform.getRotation().getY();
+    dist_vect.orientation.z = end_eff_transform.getRotation().getZ();
+    dist_vect.orientation.w = end_eff_transform.getRotation().getW();
     dist_vect_pub_.publish(dist_vect);
+    /*************dynamical system modulation control******************************/
+
+    /*************position control******************************/
+//    if(last_min_dist_ < 0.4){
+//      geometry_msgs::Pose dist_vect;
+//      repulsive_vector(0) = end_eff_transform.getOrigin().getX() - est(0);
+//      repulsive_vector(1) = end_eff_transform.getOrigin().getY() - est(1);
+//      repulsive_vector(2) = end_eff_transform.getOrigin().getZ() - est(2);
+//      repulsive_vector = (0.06/(1 + exp((last_min_dist_*5 - 1)*8)))
+//                        *(repulsive_vector / repulsive_vector.norm());
+//      dist_vect.position.x = repulsive_vector(0) + end_eff_transform.getOrigin().getX();
+//      dist_vect.position.y = repulsive_vector(1) + end_eff_transform.getOrigin().getY();
+//      dist_vect.position.z = repulsive_vector(2) + end_eff_transform.getOrigin().getZ();
+//      dist_vect.orientation.x = end_eff_transform.getRotation().getX();
+//      dist_vect.orientation.y = end_eff_transform.getRotation().getY();
+//      dist_vect.orientation.z = end_eff_transform.getRotation().getZ();
+//      dist_vect.orientation.w = end_eff_transform.getRotation().getW();
+//      dist_vect_pub_.publish(dist_vect);
+
+//      std_msgs::Float32 var_norm_repul_vector;
+//      var_norm_repul_vector.data = repulsive_vector.norm();
+//      repul_norm_pub_.publish(std_msgs::Float32(var_norm_repul_vector));
+//    }
+     /********************position control*************************/
+     /******************velocity control**************************/
+//    if(last_min_dist_ < 0.4){
+//      geometry_msgs::Twist car_com_vel;
+//      repulsive_vector(0) = end_eff_transform.getOrigin().getX() - est(0);
+//      repulsive_vector(1) = end_eff_transform.getOrigin().getY() - est(1);
+//      repulsive_vector(2) = end_eff_transform.getOrigin().getZ() - est(2);
+//      repulsive_vector = (2.5/(1 + exp((last_min_dist_*2.5 - 1)*4)))
+//                        *(repulsive_vector / repulsive_vector.norm());
+//      car_com_vel.linear.x = repulsive_vector(0);
+//      car_com_vel.linear.y = repulsive_vector(1);
+//      car_com_vel.linear.z = repulsive_vector(2);
+//      car_com_vel.angular.x = 0;
+//      car_com_vel.angular.y = 0;
+//      car_com_vel.angular.z = 0;
+//      cmd_vel_pub_.publish(car_com_vel);
+
+//      std_msgs::Float32 var_norm_repul_vector;
+//      var_norm_repul_vector.data = repulsive_vector.norm();
+//      repul_norm_pub_.publish(std_msgs::Float32(var_norm_repul_vector));
+//    }
+    /*Modefied end */
+
+
+//    dist_vect_pub_.publish(dist_vect);
     
     geometry_msgs::PointStamped closest_pt;
     closest_pt.header.frame_id = kinects_pc_->header.frame_id;

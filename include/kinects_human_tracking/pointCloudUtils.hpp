@@ -291,22 +291,38 @@ ClusterStats get_pc_stats (boost::shared_ptr<pcl::PointCloud<PointT> > pc){
  *  \param[out] pc1_pt_min Returned closest point in the pointCloud to target frame
  */
 template<typename PointT> 
-void pc_to_frame_min_dist(boost::shared_ptr<pcl::PointCloud<PointT> > pc, tf::StampedTransform transform, double& min_dist, geometry_msgs::PointStamped& pc_pt_min){
+void pc_to_frame_min_dist(boost::shared_ptr<pcl::PointCloud<PointT> > pc, tf::StampedTransform transform, double& min_dist, geometry_msgs::PointStamped& pc_pt_min, Eigen::Vector3f &sum_rep_vec, bool &switchDSM_){
   
-  Eigen::Vector4f pt2(transform.getOrigin().getX(), transform.getOrigin().getY(), transform.getOrigin().getZ(), 1.0);
-  
+  Eigen::Vector4f pt2(transform.getOrigin().getX(), transform.getOrigin().getY(), transform.getOrigin().getZ(), 0);
+
+  Eigen::Vector3f end_effector(transform.getOrigin().getX(), transform.getOrigin().getY(), transform.getOrigin().getZ());
+  Eigen::Vector3f rep_vec;
+
   min_dist = 100000000;
-  float dist = 0; 
+  float dist = 0;
   int min_idx = 0;
   for (size_t i = 0; i < pc->points.size (); ++i){
     pcl::Vector4fMap pt1 = pc->points[i].getVector4fMap();
     dist = (pt2 - pt1).norm ();
+
+    rep_vec(0) = pt2(0) - pt1(0);
+    rep_vec(1) = pt2(1) - pt1(1);
+    rep_vec(2) = pt2(2) - pt1(2);
+
     if (dist < min_dist){
       min_idx = i;
       min_dist = dist;
     }
+
+    if ((dist < 0.4) && (dist > 0.1)){
+      switchDSM_ = true;
+      //std::cout<<111111<<std::endl;
+      rep_vec = (2/(1 + exp((dist*5 - 1)*8)))
+                        *(rep_vec / dist);
+      sum_rep_vec = sum_rep_vec + rep_vec;
+    }
   }
-  
+
   pc_pt_min.header.frame_id = pc->header.frame_id;
   pc_pt_min.point.x = pc->points[min_idx].x;
   pc_pt_min.point.y = pc->points[min_idx].y;
@@ -323,7 +339,7 @@ void pc_to_frame_min_dist(boost::shared_ptr<pcl::PointCloud<PointT> > pc, tf::St
  *  \param[out] pc1_pt_min Returned closest point in the pointCloud to target frame
  */
 template<typename PointT> 
-void pc_to_frame_min_dist(boost::shared_ptr<pcl::PointCloud<PointT> > pc, tf::TransformListener* tf_listener, std::string frame_id, double& min_dist, geometry_msgs::PointStamped& pc_pt_min){
+void pc_to_frame_min_dist(boost::shared_ptr<pcl::PointCloud<PointT> > pc, tf::TransformListener* tf_listener, std::string frame_id, double& min_dist, geometry_msgs::PointStamped& pc_pt_min, Eigen::Vector3f &rep_vec_unit, bool &switch_DSM){
   
   tf::StampedTransform transform;
   try{
@@ -334,7 +350,7 @@ void pc_to_frame_min_dist(boost::shared_ptr<pcl::PointCloud<PointT> > pc, tf::Tr
     ROS_ERROR("%s",ex.what());
   }
   
-  pc_to_frame_min_dist<PointT>(pc, transform, min_dist, pc_pt_min);
+  pc_to_frame_min_dist<PointT>(pc, transform, min_dist, pc_pt_min, rep_vec_unit, switch_DSM);
     
 }
 
@@ -348,7 +364,7 @@ void pc_to_frame_min_dist(boost::shared_ptr<pcl::PointCloud<PointT> > pc, tf::Tr
  *  \param[out] pc_pt_min Returned closest point on the first pointCloud 
  */
 template<typename PointT>
-void get_closest_cluster_to_frame(boost::shared_ptr<pcl::PointCloud<PointT> > pc_in, std::vector<pcl::PointIndices> cluster_indices, tf::StampedTransform transform, boost::shared_ptr<pcl::PointCloud<PointT> >& pc_out, double& min_dist, geometry_msgs::PointStamped& pc_pt_min){
+void get_closest_cluster_to_frame(boost::shared_ptr<pcl::PointCloud<PointT> > pc_in, std::vector<pcl::PointIndices> cluster_indices, tf::StampedTransform transform, boost::shared_ptr<pcl::PointCloud<PointT> >& pc_out, double& min_dist, geometry_msgs::PointStamped& pc_pt_min, Eigen::Vector3f &sum_rep_vector, bool &switchDSM){
    
   // Check there is at least 1 cluster
   if ((cluster_indices.size() < 1))
@@ -364,7 +380,7 @@ void get_closest_cluster_to_frame(boost::shared_ptr<pcl::PointCloud<PointT> > pc
     cluster_id.push_back(i);
     
     pc_extract_clusters(pc_in, cluster_indices, cluster_id, temp_pc);
-    pc_to_frame_min_dist(temp_pc, transform, min_dist, pc_pt_min);
+    pc_to_frame_min_dist(temp_pc, transform, min_dist, pc_pt_min, sum_rep_vector, switchDSM);
     
     min_dists.push_back(min_dist);
     temp_pcs.push_back(*temp_pc);
@@ -396,7 +412,7 @@ void get_closest_cluster_to_frame(boost::shared_ptr<pcl::PointCloud<PointT> > pc
  *  \param[out] pc_pt_min Returned closest point on the first pointCloud 
  */
 template<typename PointT>
-void get_closest_cluster_to_frame(boost::shared_ptr<pcl::PointCloud<PointT> > pc_in, std::vector<pcl::PointIndices> cluster_indices, tf::TransformListener* tf_listener, std::string frame_id, boost::shared_ptr<pcl::PointCloud<PointT> >& pc_out, double& min_dist, geometry_msgs::PointStamped& pc_pt_min){
+void get_closest_cluster_to_frame(boost::shared_ptr<pcl::PointCloud<PointT> > pc_in, std::vector<pcl::PointIndices> cluster_indices, tf::TransformListener* tf_listener, std::string frame_id, boost::shared_ptr<pcl::PointCloud<PointT> >& pc_out, double& min_dist, geometry_msgs::PointStamped& pc_pt_min, Eigen::Vector3f &sum_rep_vec, bool &switch_DSM_){
    
   // Check there is at least 1 cluster
   if ((cluster_indices.size() < 1))
@@ -411,7 +427,7 @@ void get_closest_cluster_to_frame(boost::shared_ptr<pcl::PointCloud<PointT> > pc
     ROS_ERROR("%s",ex.what());
   }
   
-  get_closest_cluster_to_frame(pc_in, cluster_indices, transform, pc_out, min_dist, pc_pt_min);
+  get_closest_cluster_to_frame(pc_in, cluster_indices, transform, pc_out, min_dist, pc_pt_min, sum_rep_vec, switch_DSM_);
   
 }
 
